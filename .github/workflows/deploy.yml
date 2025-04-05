@@ -30,11 +30,15 @@ jobs:
         cache: 'maven'
 
     - name: Build with Maven
-      run: mvn clean install -DskipTests # Construit le JAR, ignore les tests pour un déploiement plus rapide
+      run: |
+        mvn clean package -DskipTests -X
+        ls -la target/
 
     - name: Find JAR file
       id: find_jar
-      run: echo "JAR_PATH=$(find target -name '*.jar' -type f | head -n 1)" >> $GITHUB_OUTPUT
+      run: |
+        echo "JAR_PATH=$(find target/ -name 'demo-0.0.1-SNAPSHOT.jar' -type f)" >> $GITHUB_OUTPUT
+        ls -la ${{ steps.find_jar.outputs.JAR_PATH }}
 
     - name: Check if JAR found
       id: check_jar
@@ -65,18 +69,29 @@ jobs:
         key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         port: 22
         script: |
-          # S'assure que le répertoire cible existe
+          # Vérifier que le répertoire existe
           mkdir -p ${{ env.TARGET_DIR }}
           cd ${{ env.TARGET_DIR }}
 
-          # Télécharge le dernier JAR depuis S3 en utilisant le rôle IAM de l'instance EC2
+          # Vérifier les permissions AWS de l'instance EC2
+          aws sts get-caller-identity
+          
+          # Vérifier si le fichier existe dans S3
+          aws s3 ls s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.JAR_NAME }}
+          
+          # Télécharger le JAR avec plus de verbosité
           echo "Downloading JAR from S3..."
-          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.JAR_NAME }} ${{ env.JAR_NAME }} --region ${{ env.AWS_REGION }}
+          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.JAR_NAME }} ${{ env.JAR_NAME }} --region ${{ env.AWS_REGION }} --debug
+          
+          # Vérifier si le téléchargement a réussi
           if [ $? -ne 0 ]; then
             echo "Error downloading JAR from S3"
             exit 1
           fi
-          echo "JAR downloaded."
+          
+          # Vérifier que le fichier a bien été téléchargé
+          ls -l ${{ env.JAR_NAME }}
+          echo "JAR downloaded successfully: $(pwd)/${{ env.JAR_NAME }}"
 
           # Crée/Met à jour le fichier de service systemd
           # Note : Suppose que Java est installé (ex: via user_data ou AMI)
