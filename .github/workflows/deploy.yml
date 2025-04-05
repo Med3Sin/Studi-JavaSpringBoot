@@ -74,19 +74,22 @@ jobs:
 
         # Vérifier que la clé a été correctement écrite
         echo "Clé SSH privée configurée avec $(wc -l ~/.ssh/private_key | awk '{print $1}') lignes"
+        head -n 1 ~/.ssh/private_key | grep -q "BEGIN" && echo "La clé commence correctement par BEGIN" || echo "ERREUR: La clé ne commence pas par BEGIN"
+        tail -n 1 ~/.ssh/private_key | grep -q "END" && echo "La clé se termine correctement par END" || echo "ERREUR: La clé ne se termine pas par END"
 
-        # Configurer SSH pour ignorer la vérification des hôtes connus
+        # Configurer SSH pour ignorer la vérification des hôtes connus et augmenter le timeout
         echo "Host *
           StrictHostKeyChecking no
           UserKnownHostsFile=/dev/null
           IdentityFile ~/.ssh/private_key
           ServerAliveInterval 60
-          ServerAliveCountMax 10" > ~/.ssh/config
+          ServerAliveCountMax 10
+          ConnectTimeout 120" > ~/.ssh/config
         chmod 600 ~/.ssh/config
 
         # Vérifier que l'hôte EC2 est accessible
         echo "Vérification de l'accessibilité de l'hôte EC2 (${{ env.EC2_HOST }})..."
-        ping -c 3 ${{ env.EC2_HOST }} || echo "Ping échoué, mais cela ne signifie pas nécessairement que l'hôte est inaccessible"
+        nc -zv -w 10 ${{ env.EC2_HOST }} 22 || echo "Connexion au port 22 échouée, mais nous allons quand même essayer SSH"
 
         echo "SSH setup completed"
 
@@ -101,15 +104,20 @@ jobs:
         echo "Répertoire cible: ${{ env.TARGET_DIR }}"
         echo "Nom du WAR: ${{ env.WAR_NAME }}"
 
-        # Utiliser scp avec l'option -o pour ignorer la vérification des hôtes connus
-        echo "Copie du fichier WAR vers l'instance EC2..."
-        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/private_key ${{ steps.find_war.outputs.WAR_PATH }} ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:${{ env.TARGET_DIR }}/${{ env.WAR_NAME }}
+        # Utiliser AWS S3 pour transférer le fichier WAR (alternative à SCP)
+        echo "Téléversement du fichier WAR vers S3..."
+        aws s3 cp ${{ steps.find_war.outputs.WAR_PATH }} s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}
 
-        # Exécuter les commandes de déploiement via SSH
-        echo "Exécution des commandes de déploiement sur l'instance EC2..."
-        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/private_key ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
-          # Vérifier que le fichier a bien été téléchargé
+        # Essayer d'utiliser SSH avec un timeout plus long
+        echo "Tentative de connexion SSH avec timeout augmenté..."
+        ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=120 -i ~/.ssh/private_key ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
+          # Télécharger le WAR depuis S3
+          echo \"Téléchargement du WAR depuis S3...\" &&
+          mkdir -p ${{ env.TARGET_DIR }} &&
           cd ${{ env.TARGET_DIR }} &&
+          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ./${{ env.WAR_NAME }} &&
+
+          # Vérifier que le fichier a bien été téléchargé
           ls -l ${{ env.WAR_NAME }} &&
           echo \"WAR file is ready for deployment: $(pwd)/${{ env.WAR_NAME }}\" &&
 
@@ -140,3 +148,32 @@ jobs:
           echo \"Checking Tomcat logs...\" &&
           sudo tail -n 50 $(dirname ${{ env.TOMCAT_WEBAPPS }})/logs/catalina.out
         "
+
+        # Si SSH échoue, utiliser AWS SSM comme alternative
+        if [ $? -ne 0 ]; then
+          echo "SSH a échoué, tentative de déploiement via AWS SSM..."
+          # Obtenir l'ID de l'instance EC2 à partir de son adresse IP
+          INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=ip-address,Values=${{ env.EC2_HOST }}" --query "Reservations[0].Instances[0].InstanceId" --output text)
+
+          if [ -n "$INSTANCE_ID" ]; then
+            echo "Instance EC2 trouvée avec l'ID: $INSTANCE_ID"
+
+            # Exécuter un document SSM pour déployer le WAR
+            aws ssm send-command \
+              --instance-ids $INSTANCE_ID \
+              --document-name "AWS-RunShellScript" \
+              --parameters commands="[
+                \"aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ${{ env.TARGET_DIR }}/${{ env.WAR_NAME }}\",
+                \"sudo systemctl stop tomcat\",
+                \"sudo cp ${{ env.TARGET_DIR }}/${{ env.WAR_NAME }} ${{ env.TOMCAT_WEBAPPS }}/\",
+                \"sudo chown -R tomcat:tomcat ${{ env.TOMCAT_WEBAPPS }}/${{ env.WAR_NAME }}\",
+                \"sudo systemctl start tomcat\"
+              ]" \
+              --comment "Deploy WAR to Tomcat"
+
+            echo "Commande SSM envoyée avec succès"
+          else
+            echo "Impossible de trouver l'ID de l'instance EC2 avec l'adresse IP ${{ env.EC2_HOST }}"
+            exit 1
+          fi
+        fi
