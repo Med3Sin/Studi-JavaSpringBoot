@@ -71,18 +71,33 @@ jobs:
         port: 22
         timeout: 60s  # Augmente le délai d'attente à 60 seconds
         script: |
+          # Informations de débogage
+          echo "==== Informations de débogage ===="
+          echo "Utilisateur: $(whoami)"
+          echo "Répertoire: $(pwd)"
+          echo "PATH: $PATH"
+          echo "AWS CLI version: $(aws --version)"
+          echo "AWS identité: $(aws sts get-caller-identity 2>&1 || echo 'Échec de la récupération de l\'identité')"
+
           # Créer le répertoire temporaire dans le home de l'utilisateur
           mkdir -p ${{ env.TARGET_DIR }}
           cd ${{ env.TARGET_DIR }}
 
-          # Vérifier les permissions AWS de l'instance EC2
-          aws sts get-caller-identity
+          # Essayer de charger les profils
+          echo "==== Chargement des profils ===="
+          source ~/.bash_profile 2>/dev/null || echo "Pas de .bash_profile"
+          source ~/.bashrc 2>/dev/null || echo "Pas de .bashrc"
+
+          # Vérifier à nouveau l'identité AWS
+          echo "AWS identité après chargement des profils: $(aws sts get-caller-identity 2>&1 || echo 'Échec de la récupération de l\'identité')"
 
           # Vérifier si le fichier existe dans S3
-          aws s3 ls s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}
+          echo "==== Vérification du fichier S3 ===="
+          aws s3 ls s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} || echo "Fichier non trouvé dans S3"
 
-          # Télécharger le WAR depuis S3
-          echo "Downloading WAR from S3..."
+          # Télécharger le WAR depuis S3 avec chemin complet
+          echo "==== Téléchargement du WAR ===="
+          which aws
           aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ./${{ env.WAR_NAME }} --region ${{ env.AWS_REGION }} --debug
 
           # Vérifier si le téléchargement a réussi
