@@ -1,4 +1,4 @@
-name: Build, Upload to S3, and Deploy Spring Boot App via Systemd
+name: Build, Upload to S3, and Deploy Java App to Tomcat
 
 on:
   push:
@@ -15,8 +15,8 @@ jobs:
       EC2_HOST: ${{ secrets.EC2_HOST }}       # Doit être créé/mis à jour après terraform apply
       EC2_USER: ${{ secrets.EC2_USER }}       # ex: ec2-user
       TARGET_DIR: ${{ secrets.TARGET_DIR }}   # ex: /home/ec2-user/app
-      JAR_NAME: ${{ secrets.JAR_NAME }}       # ex: hello_java_dev.jar
-      SERVICE_NAME: java-app # Nom pour le service systemd
+      WAR_NAME: ${{ secrets.WAR_NAME }}       # ex: application.war
+      TOMCAT_WEBAPPS: ${{ secrets.TOMCAT_WEBAPPS }}  # Chemin vers le répertoire webapps de Tomcat
 
     steps:
     - name: Checkout code
@@ -30,20 +30,25 @@ jobs:
         cache: 'maven'
 
     - name: Build with Maven
-      run: mvn clean install -DskipTests # Construit le JAR, ignore les tests pour un déploiement plus rapide
-
-    - name: Find JAR file
-      id: find_jar
-      run: echo "JAR_PATH=$(find target -name '*.jar' -type f | head -n 1)" >> $GITHUB_OUTPUT
-
-    - name: Check if JAR found
-      id: check_jar
       run: |
-        if [ -z "${{ steps.find_jar.outputs.JAR_PATH }}" ]; then
-          echo "Error: Built JAR file not found in target directory."
+        # Modifier le packaging en war dans pom.xml si ce n'est pas déjà fait
+        mvn clean package -DskipTests
+        ls -la target/
+
+    - name: Find WAR file
+      id: find_war
+      run: |
+        echo "WAR_PATH=$(find target/ -name '*.war' -type f)" >> $GITHUB_OUTPUT
+        ls -la ${{ steps.find_war.outputs.WAR_PATH }}
+
+    - name: Check if WAR found
+      id: check_war
+      run: |
+        if [ -z "${{ steps.find_war.outputs.WAR_PATH }}" ]; then
+          echo "Error: Built WAR file not found in target directory."
           exit 1
         fi
-        echo "Found JAR: ${{ steps.find_jar.outputs.JAR_PATH }}"
+        echo "Found WAR: ${{ steps.find_war.outputs.WAR_PATH }}"
 
     - name: Configure AWS Credentials for GitHub Actions
       uses: aws-actions/configure-aws-credentials@v4
@@ -52,64 +57,70 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Upload JAR to S3
+    - name: Upload WAR to S3
       run: |
-        aws s3 cp ${{ steps.find_jar.outputs.JAR_PATH }} s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.JAR_NAME }}
-        echo "Uploaded JAR to s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.JAR_NAME }}"
+        aws s3 cp ${{ steps.find_war.outputs.WAR_PATH }} s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}
+        echo "Uploaded WAR to s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}"
 
-    - name: Deploy to EC2 and Restart Service
+    - name: Deploy to EC2 and Deploy to Tomcat
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ env.EC2_HOST }}
         username: ${{ env.EC2_USER }}
         key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
         port: 22
+        timeout: 60s  # Augmente le délai d'attente à 60 seconds
         script: |
-          # S'assure que le répertoire cible existe
+          # Créer le répertoire temporaire dans le home de l'utilisateur
           mkdir -p ${{ env.TARGET_DIR }}
           cd ${{ env.TARGET_DIR }}
 
-          # Télécharge le dernier JAR depuis S3 en utilisant le rôle IAM de l'instance EC2
-          echo "Downloading JAR from S3..."
-          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.JAR_NAME }} ${{ env.JAR_NAME }} --region ${{ env.AWS_REGION }}
+          # Vérifier les permissions AWS de l'instance EC2
+          aws sts get-caller-identity
+
+          # Vérifier si le fichier existe dans S3
+          aws s3 ls s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}
+
+          # Télécharger le WAR depuis S3
+          echo "Downloading WAR from S3..."
+          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ./${{ env.WAR_NAME }} --region ${{ env.AWS_REGION }} --debug
+
+          # Vérifier si le téléchargement a réussi
           if [ $? -ne 0 ]; then
-            echo "Error downloading JAR from S3"
+            echo "Error downloading WAR from S3"
             exit 1
           fi
-          echo "JAR downloaded."
 
-          # Crée/Met à jour le fichier de service systemd
-          # Note : Suppose que Java est installé (ex: via user_data ou AMI)
-          # Note : Suppose que Parameter Store est configuré dans l'application Spring Boot pour lire les secrets de la BDD
-          echo "Creating/Updating systemd service file..."
-          sudo bash -c 'cat > /etc/systemd/system/${{ env.SERVICE_NAME }}.service' << EOF
-          [Unit]
-          Description=Java Spring Boot Application (${{ env.JAR_NAME }})
-          After=network.target # Démarre après que le réseau soit opérationnel
-          # Ajoutez 'After=mysql.service' ou similaire si la BDD est locale et doit démarrer en premier
+          # Vérifier que le fichier a bien été téléchargé
+          ls -l ${{ env.WAR_NAME }}
+          echo "WAR downloaded successfully: $(pwd)/${{ env.WAR_NAME }}"
 
-          [Service]
-          User=${{ env.EC2_USER }} # Exécute en tant que cet utilisateur
-          WorkingDirectory=${{ env.TARGET_DIR }}
-          # Ajoutez des variables d'environnement si nécessaire pour votre application
-          # Exemple : Environment="SPRING_PROFILES_ACTIVE=production"
-          # Exemple : Environment="PARAM_STORE_PATH=/app/${{ env.EC2_HOST }}/db/" # Si l'application a besoin d'une indication de chemin
-          ExecStart=/usr/bin/java -jar ${{ env.TARGET_DIR }}/${{ env.JAR_NAME }}
-          SuccessExitStatus=143 # Code de sortie standard pour SIGTERM
-          Restart=on-failure # Redémarre en cas d'échec
-          RestartSec=5
+          # Arrêter Tomcat avant le déploiement
+          echo "Stopping Tomcat..."
+          sudo systemctl stop tomcat
 
-          [Install]
-          WantedBy=multi-user.target
-          EOF
-          echo "Systemd file created/updated."
+          # Déployer le WAR dans le répertoire webapps de Tomcat
+          echo "Deploying WAR to Tomcat..."
+          sudo cp ${{ env.WAR_NAME }} ${{ env.TOMCAT_WEBAPPS }}/
 
-          # Recharge systemd, active et redémarre le service
-          echo "Reloading systemd and restarting service..."
-          sudo systemctl daemon-reload
-          sudo systemctl enable ${{ env.SERVICE_NAME }}.service
-          sudo systemctl restart ${{ env.SERVICE_NAME }}.service
-          echo "Service ${{ env.SERVICE_NAME }} restarted."
-          # Optionnel : Vérifier le statut
-          # sleep 5 # Donne au service le temps de démarrer/échouer
-          # sudo systemctl status ${{ env.SERVICE_NAME }}.service --no-pager
+          # Si vous voulez déployer sous un nom spécifique (par exemple ROOT.war pour l'application racine)
+          # sudo cp ${{ env.WAR_NAME }} ${{ env.TOMCAT_WEBAPPS }}/ROOT.war
+
+          # Définir les permissions appropriées pour que Tomcat puisse accéder au fichier
+          sudo chown -R tomcat:tomcat ${{ env.TOMCAT_WEBAPPS }}/${{ env.WAR_NAME }}
+
+          # Redémarrer Tomcat
+          echo "Starting Tomcat..."
+          sudo systemctl start tomcat
+
+          # Vérifier l'état de Tomcat
+          echo "Checking Tomcat status..."
+          sudo systemctl status tomcat --no-pager
+
+          # Attendre que l'application soit déployée
+          echo "Waiting for application deployment..."
+          sleep 10
+
+          # Vérifier les logs de Tomcat pour s'assurer que l'application a démarré correctement
+          echo "Checking Tomcat logs..."
+          sudo tail -n 50 $(dirname ${{ env.TOMCAT_WEBAPPS }})/logs/catalina.out
