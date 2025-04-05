@@ -62,80 +62,65 @@ jobs:
         aws s3 cp ${{ steps.find_war.outputs.WAR_PATH }} s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}
         echo "Uploaded WAR to s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }}"
 
+    - name: Setup SSH for Direct Connection
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/private_key
+        chmod 600 ~/.ssh/private_key
+        ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts
+        echo "SSH setup completed"
+
     - name: Deploy to EC2 and Deploy to Tomcat
-      uses: appleboy/ssh-action@v1.0.3
-      with:
-        host: ${{ env.EC2_HOST }}
-        username: ${{ env.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-        port: 22
-        timeout: 60s  # Augmente le délai d'attente à 60 seconds
-        script: |
+      run: |
+        echo "Starting deployment via direct SSH..."
+        ssh -v -i ~/.ssh/private_key -o StrictHostKeyChecking=no ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
           # Informations de débogage
-          echo "==== Informations de débogage ===="
-          echo "Utilisateur: $(whoami)"
-          echo "Répertoire: $(pwd)"
-          echo "PATH: $PATH"
-          echo "AWS CLI version: $(aws --version)"
-          echo "AWS identité: $(aws sts get-caller-identity 2>&1 || echo 'Échec de la récupération de l\'identité')"
+          echo \"==== Informations de débogage ====\" &&
+          echo \"Utilisateur: $(whoami)\" &&
+          echo \"Répertoire: $(pwd)\" &&
+          echo \"PATH: $PATH\" &&
+          echo \"AWS CLI version: $(aws --version)\" &&
 
-          # Créer le répertoire temporaire dans le home de l'utilisateur
-          mkdir -p ${{ env.TARGET_DIR }}
-          cd ${{ env.TARGET_DIR }}
+          # Créer le répertoire temporaire
+          mkdir -p ${{ env.TARGET_DIR }} &&
+          cd ${{ env.TARGET_DIR }} &&
 
-          # Essayer de charger les profils
-          echo "==== Chargement des profils ===="
-          source ~/.bash_profile 2>/dev/null || echo "Pas de .bash_profile"
-          source ~/.bashrc 2>/dev/null || echo "Pas de .bashrc"
+          # Charger les profils
+          source ~/.bash_profile 2>/dev/null || echo \"Pas de .bash_profile\" &&
+          source ~/.bashrc 2>/dev/null || echo \"Pas de .bashrc\" &&
 
-          # Vérifier à nouveau l'identité AWS
-          echo "AWS identité après chargement des profils: $(aws sts get-caller-identity 2>&1 || echo 'Échec de la récupération de l\'identité')"
-
-          # Vérifier si le fichier existe dans S3
-          echo "==== Vérification du fichier S3 ===="
-          aws s3 ls s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} || echo "Fichier non trouvé dans S3"
-
-          # Télécharger le WAR depuis S3 avec chemin complet
-          echo "==== Téléchargement du WAR ===="
-          which aws
-          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ./${{ env.WAR_NAME }} --region ${{ env.AWS_REGION }} --debug
-
-          # Vérifier si le téléchargement a réussi
-          if [ $? -ne 0 ]; then
-            echo "Error downloading WAR from S3"
-            exit 1
-          fi
+          # Télécharger le WAR depuis S3
+          echo \"==== Téléchargement du WAR ====\" &&
+          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ./${{ env.WAR_NAME }} --region ${{ env.AWS_REGION }} &&
 
           # Vérifier que le fichier a bien été téléchargé
-          ls -l ${{ env.WAR_NAME }}
-          echo "WAR downloaded successfully: $(pwd)/${{ env.WAR_NAME }}"
+          ls -l ${{ env.WAR_NAME }} &&
+          echo \"WAR downloaded successfully: $(pwd)/${{ env.WAR_NAME }}\" &&
 
           # Arrêter Tomcat avant le déploiement
-          echo "Stopping Tomcat..."
-          sudo systemctl stop tomcat
+          echo \"Stopping Tomcat...\" &&
+          sudo systemctl stop tomcat &&
 
           # Déployer le WAR dans le répertoire webapps de Tomcat
-          echo "Deploying WAR to Tomcat..."
-          sudo cp ${{ env.WAR_NAME }} ${{ env.TOMCAT_WEBAPPS }}/
-
-          # Si vous voulez déployer sous un nom spécifique (par exemple ROOT.war pour l'application racine)
-          # sudo cp ${{ env.WAR_NAME }} ${{ env.TOMCAT_WEBAPPS }}/ROOT.war
+          echo \"Deploying WAR to Tomcat...\" &&
+          sudo cp ${{ env.WAR_NAME }} ${{ env.TOMCAT_WEBAPPS }}/ &&
 
           # Définir les permissions appropriées pour que Tomcat puisse accéder au fichier
-          sudo chown -R tomcat:tomcat ${{ env.TOMCAT_WEBAPPS }}/${{ env.WAR_NAME }}
+          sudo chown -R tomcat:tomcat ${{ env.TOMCAT_WEBAPPS }}/${{ env.WAR_NAME }} &&
 
           # Redémarrer Tomcat
-          echo "Starting Tomcat..."
-          sudo systemctl start tomcat
+          echo \"Starting Tomcat...\" &&
+          sudo systemctl start tomcat &&
 
           # Vérifier l'état de Tomcat
-          echo "Checking Tomcat status..."
-          sudo systemctl status tomcat --no-pager
+          echo \"Checking Tomcat status...\" &&
+          sudo systemctl status tomcat --no-pager &&
 
           # Attendre que l'application soit déployée
-          echo "Waiting for application deployment..."
-          sleep 10
+          echo \"Waiting for application deployment...\" &&
+          sleep 10 &&
 
-          # Vérifier les logs de Tomcat pour s'assurer que l'application a démarré correctement
-          echo "Checking Tomcat logs..."
+          # Vérifier les logs de Tomcat
+          echo \"Checking Tomcat logs...\" &&
           sudo tail -n 50 $(dirname ${{ env.TOMCAT_WEBAPPS }})/logs/catalina.out
+        "
