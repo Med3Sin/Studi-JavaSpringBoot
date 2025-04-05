@@ -64,26 +64,50 @@ jobs:
 
     - name: Setup SSH for Direct Connection
       run: |
+        # Créer le répertoire SSH et configurer les permissions
         mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+
+        # Écrire la clé SSH privée dans un fichier
         echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/private_key
         chmod 600 ~/.ssh/private_key
-        echo "Host ${{ env.EC2_HOST }}
+
+        # Vérifier que la clé a été correctement écrite
+        echo "Clé SSH privée configurée avec $(wc -l ~/.ssh/private_key | awk '{print $1}') lignes"
+
+        # Configurer SSH pour ignorer la vérification des hôtes connus
+        echo "Host *
           StrictHostKeyChecking no
           UserKnownHostsFile=/dev/null
           IdentityFile ~/.ssh/private_key
           ServerAliveInterval 60
           ServerAliveCountMax 10" > ~/.ssh/config
-        ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts
+        chmod 600 ~/.ssh/config
+
+        # Vérifier que l'hôte EC2 est accessible
+        echo "Vérification de l'accessibilité de l'hôte EC2 (${{ env.EC2_HOST }})..."
+        ping -c 3 ${{ env.EC2_HOST }} || echo "Ping échoué, mais cela ne signifie pas nécessairement que l'hôte est inaccessible"
+
         echo "SSH setup completed"
 
     - name: Deploy to EC2 and Deploy to Tomcat
       run: |
         echo "Starting deployment via direct SSH..."
-        # Utiliser scp pour copier le WAR directement sur l'instance EC2
-        scp -i ~/.ssh/private_key ${{ steps.find_war.outputs.WAR_PATH }} ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:${{ env.TARGET_DIR }}/${{ env.WAR_NAME }}
+
+        # Afficher les informations de débogage
+        echo "Fichier WAR à déployer: ${{ steps.find_war.outputs.WAR_PATH }}"
+        echo "Hôte EC2: ${{ env.EC2_HOST }}"
+        echo "Utilisateur EC2: ${{ env.EC2_USER }}"
+        echo "Répertoire cible: ${{ env.TARGET_DIR }}"
+        echo "Nom du WAR: ${{ env.WAR_NAME }}"
+
+        # Utiliser scp avec l'option -o pour ignorer la vérification des hôtes connus
+        echo "Copie du fichier WAR vers l'instance EC2..."
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/private_key ${{ steps.find_war.outputs.WAR_PATH }} ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:${{ env.TARGET_DIR }}/${{ env.WAR_NAME }}
 
         # Exécuter les commandes de déploiement via SSH
-        ssh -i ~/.ssh/private_key ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
+        echo "Exécution des commandes de déploiement sur l'instance EC2..."
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/private_key ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
           # Vérifier que le fichier a bien été téléchargé
           cd ${{ env.TARGET_DIR }} &&
           ls -l ${{ env.WAR_NAME }} &&
