@@ -94,7 +94,7 @@ src/
 
 ## Déploiement
 
-L'application est configurée pour être déployée automatiquement sur un serveur Tomcat via GitHub Actions.
+L'application est configurée pour être déployée automatiquement sur un serveur Tomcat via GitHub Actions. Le processus de déploiement utilise une connexion SSH directe pour transférer le fichier WAR et exécuter les commandes de déploiement sur le serveur.
 
 ### Workflow de déploiement
 
@@ -102,7 +102,8 @@ Le workflow de déploiement est défini dans le fichier `.github/workflows/deplo
 
 1. **Build** : Compilation de l'application avec Maven pour générer un fichier WAR
 2. **Upload** : Téléversement du fichier WAR vers un bucket S3
-3. **Déploiement** : Téléchargement du fichier WAR depuis S3 vers l'instance EC2 et déploiement sur Tomcat
+3. **Configuration SSH** : Préparation de la connexion SSH sécurisée vers l'instance EC2
+4. **Déploiement direct** : Copie du fichier WAR directement sur l'instance EC2 via SCP et déploiement sur Tomcat via SSH
 
 ### Configuration requise
 
@@ -129,3 +130,21 @@ http://[EC2_HOST]:8080/[nom-de-l'application]
 ```
 
 Où `[nom-de-l'application]` est le nom du fichier WAR sans l'extension `.war`.
+
+### Résolution des problèmes courants
+
+#### Problèmes de connexion SSH
+
+Si vous rencontrez des problèmes de connexion SSH lors du déploiement :
+
+1. Vérifiez que votre instance EC2 est accessible depuis l'extérieur
+2. Assurez-vous que le groupe de sécurité autorise les connexions SSH (port 22) depuis les adresses IP des runners GitHub Actions
+3. Vérifiez que la clé SSH privée est correctement formatée dans les secrets GitHub
+
+#### Problèmes d'accès à S3
+
+Si vous rencontrez des problèmes d'accès à S3 :
+
+1. Assurez-vous que l'instance EC2 a les permissions IAM nécessaires pour accéder au bucket S3
+2. Vérifiez que les identifiants AWS sont correctement configurés sur l'instance EC2
+3. Si vous utilisez un VPC Endpoint pour S3, assurez-vous qu'il est correctement configuré

@@ -67,35 +67,27 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/private_key
         chmod 600 ~/.ssh/private_key
+        echo "Host ${{ env.EC2_HOST }}
+          StrictHostKeyChecking no
+          UserKnownHostsFile=/dev/null
+          IdentityFile ~/.ssh/private_key
+          ServerAliveInterval 60
+          ServerAliveCountMax 10" > ~/.ssh/config
         ssh-keyscan -H ${{ env.EC2_HOST }} >> ~/.ssh/known_hosts
         echo "SSH setup completed"
 
     - name: Deploy to EC2 and Deploy to Tomcat
       run: |
         echo "Starting deployment via direct SSH..."
-        ssh -v -i ~/.ssh/private_key -o StrictHostKeyChecking=no ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
-          # Informations de débogage
-          echo \"==== Informations de débogage ====\" &&
-          echo \"Utilisateur: $(whoami)\" &&
-          echo \"Répertoire: $(pwd)\" &&
-          echo \"PATH: $PATH\" &&
-          echo \"AWS CLI version: $(aws --version)\" &&
+        # Utiliser scp pour copier le WAR directement sur l'instance EC2
+        scp -i ~/.ssh/private_key ${{ steps.find_war.outputs.WAR_PATH }} ${{ env.EC2_USER }}@${{ env.EC2_HOST }}:${{ env.TARGET_DIR }}/${{ env.WAR_NAME }}
 
-          # Créer le répertoire temporaire
-          mkdir -p ${{ env.TARGET_DIR }} &&
-          cd ${{ env.TARGET_DIR }} &&
-
-          # Charger les profils
-          source ~/.bash_profile 2>/dev/null || echo \"Pas de .bash_profile\" &&
-          source ~/.bashrc 2>/dev/null || echo \"Pas de .bashrc\" &&
-
-          # Télécharger le WAR depuis S3
-          echo \"==== Téléchargement du WAR ====\" &&
-          aws s3 cp s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}${{ env.WAR_NAME }} ./${{ env.WAR_NAME }} --region ${{ env.AWS_REGION }} &&
-
+        # Exécuter les commandes de déploiement via SSH
+        ssh -i ~/.ssh/private_key ${{ env.EC2_USER }}@${{ env.EC2_HOST }} "
           # Vérifier que le fichier a bien été téléchargé
+          cd ${{ env.TARGET_DIR }} &&
           ls -l ${{ env.WAR_NAME }} &&
-          echo \"WAR downloaded successfully: $(pwd)/${{ env.WAR_NAME }}\" &&
+          echo \"WAR file is ready for deployment: $(pwd)/${{ env.WAR_NAME }}\" &&
 
           # Arrêter Tomcat avant le déploiement
           echo \"Stopping Tomcat...\" &&
